@@ -2,17 +2,15 @@ from flask import Flask, render_template, request, jsonify
 import pickle
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
 import warnings
 warnings.filterwarnings('ignore')
 
 app = Flask(__name__)
 
 # ============================================================================
-# LOAD YOUR TRAINED MODEL
+# LOAD MODEL AND REQUIRED FEATURES
 # ============================================================================
 
-# Load model (change path to where you saved your best model)
 try:
     with open('models/best_model.pkl', 'rb') as f:
         model = pickle.load(f)
@@ -21,28 +19,18 @@ except Exception as e:
     print(f"⚠ Error loading model: {e}")
     model = None
 
-# Load scaler if you saved it during preprocessing
 try:
-    with open('models/scaler.pkl', 'rb') as f:
-        scaler = pickle.load(f)
-    print("✓ Scaler loaded successfully!")
-except:
-    scaler = None
-    print("⚠ Scaler not found - will create new one")
+    with open('models/required_features.pkl', 'rb') as f:
+        REQUIRED_FEATURES = pickle.load(f)
+    print(f"✓ Loaded {len(REQUIRED_FEATURES)} required features")
+    print(f"  Features: {REQUIRED_FEATURES[:5]}... (first 5)")
+except Exception as e:
+    print(f"⚠ Error loading features: {e}")
+    REQUIRED_FEATURES = None
 
-# Feature names (from your preprocessing)
-FEATURE_NAMES = [
-    'VISITMO', 'VISITDAY', 'VISITYR', 'NACCVNUM', 'BIRTHMO', 'BIRTHYR', 
-    'SEX', 'HISPANIC', 'HISPOR', 'RACE', 'RACESEC', 'RACETER', 
-    'PRIMLANG', 'EDUC', 'MARISTAT', 'NACCLIVS', 'INDEPEND', 'RESIDENC', 
-    'HANDED', 'NACCAGE', 'NACCAGEB', 'INBIRMO', 'INBIRYR', 'INSEX', 
-    'INHISP', 'INRACE', 'INEDUC', 'INRELTO', 'INLIVWTH', 'INVISITS', 
-    'INCALLS', 'INRELY', 'NACCFAM', 'NACCMOM', 'NACCDAD', 'TOBAC30', 
-    'TOBAC100', 'SMOKYRS', 'PACKSPER', 'QUITSMOK', 'ALCOCCAS', 'ALCFREQ', 
-    'HEIGHT', 'WEIGHT', 'BPSYS', 'BPDIAS', 'HRATE', 'BILLS', 'TAXES', 
-    'SHOPPING', 'GAMES', 'STOVE', 'MEALPREP', 'EVENTS', 'PAYATTN', 
-    'REMDATES', 'TRAVEL'
-]
+print(f"\n{'='*80}")
+print("DEMENTIA RISK ESTIMATOR - WEB APPLICATION")
+print(f"{'='*80}\n")
 
 # ============================================================================
 # ROUTES
@@ -50,37 +38,44 @@ FEATURE_NAMES = [
 
 @app.route('/')
 def index():
-    """Landing page"""
     return render_template('index.html')
 
 @app.route('/questionnaire')
 def questionnaire():
-    """Questionnaire page"""
     return render_template('questionnaire.html')
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    """
-    Main prediction endpoint
-    Receives form data, processes it, returns risk prediction
-    """
+    """Main prediction endpoint"""
     try:
+        print(f"\n{'='*80}")
+        print("NEW PREDICTION REQUEST")
+        print(f"{'='*80}")
+        
         # Get form data
         form_data = request.get_json()
+        print(f"✓ Received {len(form_data)} form responses")
         
-        # Convert form responses to model features
-        features = process_form_data(form_data)
+        # Create features matching EXACT model requirements
+        features_df = create_model_features(form_data)
+        print(f"✓ Created feature vector with {len(features_df.columns)} features")
+        
+        # Debug: Show what we're sending
+        print(f"\nFeatures being sent to model:")
+        print(f"  Columns: {list(features_df.columns)}")
+        print(f"  Sample values: {features_df.iloc[0, :5].to_dict()}")
         
         # Make prediction
         if model is not None:
-            # Get probability
-            probability = model.predict_proba([features])[0][1]
+            probability = model.predict_proba(features_df)[0][1]
             risk_percentage = float(probability * 100)
+            prediction = int(model.predict(features_df)[0])
             
-            # Get binary prediction
-            prediction = int(model.predict([features])[0])
+            print(f"\n✓ Prediction successful!")
+            print(f"  Risk: {risk_percentage:.1f}%")
+            print(f"{'='*80}\n")
             
-            # Determine risk category
+            # Risk category
             if risk_percentage < 30:
                 risk_category = "Low Risk"
                 risk_color = "#00d97e"
@@ -91,8 +86,8 @@ def predict():
                 risk_category = "At Risk"
                 risk_color = "#dc3545"
             
-            # Generate personalized recommendations
-            recommendations = generate_recommendations(features, form_data)
+            # Recommendations
+            recommendations = generate_recommendations(form_data)
             
             return jsonify({
                 'success': True,
@@ -103,160 +98,221 @@ def predict():
                 'recommendations': recommendations
             })
         else:
-            return jsonify({
-                'success': False,
-                'error': 'Model not loaded'
-            }), 500
+            return jsonify({'success': False, 'error': 'Model not loaded'}), 500
             
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        print(f"\n{'='*80}")
+        print("❌ PREDICTION ERROR")
+        print(f"{'='*80}")
+        print(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        print(f"{'='*80}\n")
+        
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/results')
 def results():
-    """Results page"""
     return render_template('results.html')
 
 # ============================================================================
-# HELPER FUNCTIONS
+# FEATURE ENGINEERING - MATCHES EXACT MODEL TRAINING
 # ============================================================================
 
-def process_form_data(form_data):
+def create_model_features(form_data):
     """
-    Convert questionnaire responses to model features
-    This is the KEY function - maps your form to model input
+    Create features matching EXACTLY what the model expects
+    Based on required_features.pkl: 40 specific features
     """
     
-    # Initialize feature vector with defaults
+    # Initialize feature dictionary
     features = {}
     
-    # Section 1: Demographics
-    features['born_before_1970'] = 1 if form_data.get('born_before_1970') == 'yes' else 0
-    features['sex_male'] = 1 if form_data.get('sex_male') == 'yes' else 0
-    features['hispanic_latino'] = 1 if form_data.get('hispanic_latino') == 'yes' else 0
-    features['racial_minority'] = 1 if form_data.get('racial_minority') == 'yes' else 0
-    features['education_years'] = 1 if form_data.get('education_years') == 'yes' else 0
-    features['married_partnered'] = 1 if form_data.get('married_partnered') == 'yes' else 0
-    features['right_handed'] = 1 if form_data.get('right_handed') == 'yes' else 0
+    # === EXACT FEATURES FROM MODEL (in order) ===
     
-    # Section 2: Background
-    features['english_country'] = 1 if form_data.get('english_country') == 'yes' else 0
-    features['spanish_environment'] = 1 if form_data.get('spanish_environment') == 'yes' else 0
-    features['speak_english'] = 1 if form_data.get('speak_english') == 'yes' else 0
-    features['speak_spanish'] = 1 if form_data.get('speak_spanish') == 'yes' else 0
+    # 1. FORMVER
+    features['FORMVER'] = 3
     
-    # Section 3: Vision & Hearing
-    features['vision_without_glasses'] = 1 if form_data.get('vision_without_glasses') == 'yes' else 0
-    features['vision_with_glasses'] = map_vision_hearing(form_data.get('vision_with_glasses'))
-    features['hearing_without_aid'] = 1 if form_data.get('hearing_without_aid') == 'yes' else 0
-    features['hearing_with_aid'] = map_vision_hearing(form_data.get('hearing_with_aid'))
+    # 2-5. Visit date
+    features['VISITMO'] = 11
+    features['VISITDAY'] = 17
+    features['VISITYR'] = 2024
     
-    # Section 4: Health
-    features['height_above_150'] = 1 if form_data.get('height_above_150') == 'yes' else 0
-    features['weight_above_50'] = 1 if form_data.get('weight_above_50') == 'yes' else 0
-    features['heart_rate_normal'] = map_unsure(form_data.get('heart_rate_normal'))
-    features['systolic_bp'] = map_unsure(form_data.get('systolic_bp'))
-    features['diastolic_bp'] = map_unsure(form_data.get('diastolic_bp'))
+    # 6-7. Visit numbers
+    features['NACCVNUM'] = 1
+    features['NACCAVST'] = 1
+    features['NACCNVST'] = 0
     
-    # Section 5: Smoking
-    features['smoking_history'] = 1 if form_data.get('smoking_history') == 'yes' else 0
+    # 8-9. Birth date (estimate from age question)
+    features['BIRTHMO'] = 6
+    features['BIRTHYR'] = 1965 if form_data.get('born_before_1970') == 'yes' else 1985
     
-    # Section 6: Platform
-    features['first_time_user'] = 1 if form_data.get('first_time_user') == 'yes' else 0
-    features['answering_in_english'] = 1 if form_data.get('answering_in_english') == 'yes' else 0
-    features['remote_response'] = 1 if form_data.get('remote_response') == 'yes' else 0
+    # 10-14. Demographics
+    features['SEX'] = 1 if form_data.get('sex_male') == 'yes' else 0
+    features['HISPANIC'] = 1 if form_data.get('hispanic_latino') == 'yes' else 0
+    features['RACE'] = 1 if form_data.get('racial_minority') == 'yes' else 0
+    features['EDUC'] = 16 if form_data.get('education_years') == 'yes' else 10
+    features['MARISTAT'] = 1 if form_data.get('married_partnered') == 'yes' else 0
     
-    # Convert to array in correct order (this MUST match your model's training features)
-    # You'll need to adjust this based on your actual feature names
-    feature_array = [features.get(key, 0) for key in sorted(features.keys())]
+    # 15. Handedness
+    features['HANDED'] = 1 if form_data.get('right_handed') == 'yes' else 0
     
-    return feature_array
+    # 16-19. Informant data
+    features['INBIRMO'] = 6
+    features['INBIRYR'] = features['BIRTHYR']
+    features['INSEX'] = features['SEX']
+    features['INRELTO'] = 1
+    
+    # 20-21. Physical measurements
+    features['HEIGHT'] = 170 if form_data.get('height_above_150') == 'yes' else 145
+    features['WEIGHT'] = 70 if form_data.get('weight_above_50') == 'yes' else 45
+    
+    # 22-23. Vital signs
+    if form_data.get('systolic_bp') == 'yes':
+        features['BPSYS'] = 120
+    elif form_data.get('systolic_bp') == 'no':
+        features['BPSYS'] = 150
+    else:
+        features['BPSYS'] = 130
+    
+    if form_data.get('heart_rate_normal') == 'yes':
+        features['HRATE'] = 75
+    elif form_data.get('heart_rate_normal') == 'no':
+        features['HRATE'] = 105
+    else:
+        features['HRATE'] = 80
+    
+    # 24-29. Vision & Hearing
+    features['VISION'] = 0 if form_data.get('vision_without_glasses') == 'yes' else 1
+    features['VISCORR'] = 0 if form_data.get('vision_with_glasses') == 'yes' else 1
+    features['VISWCORR'] = features['VISCORR']
+    features['HEARING'] = 0 if form_data.get('hearing_without_aid') == 'yes' else 1
+    features['HEARAID'] = 1 if form_data.get('hearing_with_aid') != 'na' else 0
+    features['HEARWAID'] = 0 if form_data.get('hearing_with_aid') == 'yes' else 1
+    
+    # 30. Death indicator
+    features['NACCDIED'] = 0
+    
+    # 31. AGE_AT_VISIT (engineered)
+    features['AGE_AT_VISIT'] = features['VISITYR'] - features['BIRTHYR']
+    
+    # 32. BMI (engineered)
+    height_m = features['HEIGHT'] * 0.0254
+    weight_kg = features['WEIGHT'] * 0.453592
+    features['BMI'] = np.clip(weight_kg / (height_m ** 2), 10, 60)
+    
+    # 33. EDUC_LEVEL (engineered)
+    if features['EDUC'] >= 16:
+        features['EDUC_LEVEL'] = 2
+    elif features['EDUC'] >= 12:
+        features['EDUC_LEVEL'] = 1
+    else:
+        features['EDUC_LEVEL'] = 0
+    
+    # 34. HIGH_BP (engineered)
+    # Calculate diastolic BP first
+    if form_data.get('diastolic_bp') == 'yes':
+        diastolic = 80
+    elif form_data.get('diastolic_bp') == 'no':
+        diastolic = 95
+    else:
+        diastolic = 85
+    
+    features['HIGH_BP'] = 1 if (features['BPSYS'] > 140 or diastolic > 90) else 0
+    
+    # 35-37. PACKET one-hot encoding
+    is_remote = form_data.get('remote_response') == 'yes'
+    features['PACKET_I'] = 0 if is_remote else 1
+    features['PACKET_IT'] = 0  # Default to 0 (not in-person phone)
+    features['PACKET_T'] = 1 if is_remote else 0
+    
+    # 38-40. Polynomial/interaction features
+    features['AGE_AT_VISIT EDUC'] = features['AGE_AT_VISIT'] * features['EDUC']
+    features['AGE_AT_VISIT BMI'] = features['AGE_AT_VISIT'] * features['BMI']
+    features['EDUC BMI'] = features['EDUC'] * features['BMI']
+    
+    # Convert to DataFrame with EXACT column order from model
+    if REQUIRED_FEATURES is not None:
+        # Use exact order from model
+        df = pd.DataFrame([features])[REQUIRED_FEATURES]
+    else:
+        # Fallback: create with features in order
+        df = pd.DataFrame([features])
+    
+    # Ensure float32 dtype
+    df = df.astype('float32')
+    
+    return df
 
-def map_vision_hearing(value):
-    """Map vision/hearing responses to numeric"""
-    if value == 'yes':
-        return 1
-    elif value == 'no':
-        return 0
-    else:  # 'na'
-        return 0.5
+# ============================================================================
+# RECOMMENDATIONS
+# ============================================================================
 
-def map_unsure(value):
-    """Map unsure responses to numeric"""
-    if value == 'yes':
-        return 1
-    elif value == 'no':
-        return 0
-    else:  # 'unsure'
-        return 0.5
-
-def generate_recommendations(features, form_data):
-    """Generate personalized recommendations based on responses"""
+def generate_recommendations(form_data):
+    """Generate personalized recommendations"""
     recommendations = []
     
-    # Education-based recommendation
     if form_data.get('education_years') == 'no':
         recommendations.append({
             'icon': '📚',
             'title': 'Cognitive Engagement',
-            'text': 'Engage in mentally stimulating activities like reading, puzzles, or learning new skills to build cognitive reserve.'
+            'text': 'Engage in mentally stimulating activities like reading, puzzles, or learning new skills.'
         })
     
-    # Social connection
     if form_data.get('married_partnered') == 'no':
         recommendations.append({
             'icon': '👥',
             'title': 'Social Connection',
-            'text': 'Maintain strong social ties. Join clubs, volunteer, or regularly connect with friends and family.'
+            'text': 'Maintain strong social ties through clubs, volunteering, or regular family contact.'
         })
     
-    # Smoking
     if form_data.get('smoking_history') == 'yes':
         recommendations.append({
             'icon': '🚭',
             'title': 'Quit Smoking',
-            'text': 'If you currently smoke, consider quitting. Smoking cessation can reduce dementia risk at any age.'
+            'text': 'Smoking cessation can reduce dementia risk at any age. Seek support to quit.'
         })
     
-    # Hearing
     if form_data.get('hearing_without_aid') == 'no':
         recommendations.append({
             'icon': '👂',
             'title': 'Hearing Health',
-            'text': 'Untreated hearing loss is linked to cognitive decline. Consider getting a hearing evaluation.'
+            'text': 'Untreated hearing loss is linked to cognitive decline. Get a hearing evaluation.'
         })
     
-    # Always include these general recommendations
+    if form_data.get('systolic_bp') == 'no' or form_data.get('diastolic_bp') == 'no':
+        recommendations.append({
+            'icon': '❤️',
+            'title': 'Blood Pressure',
+            'text': 'High blood pressure increases dementia risk. Monitor and manage with your doctor.'
+        })
+    
+    # Always include
     recommendations.extend([
         {
             'icon': '🥗',
             'title': 'Brain-Healthy Diet',
-            'text': 'Follow the MIND diet rich in vegetables, berries, whole grains, fish, and healthy fats.'
+            'text': 'Follow the MIND diet: vegetables, berries, whole grains, fish, healthy fats.'
         },
         {
             'icon': '🏃',
             'title': 'Physical Activity',
-            'text': 'Aim for 150 minutes of moderate exercise weekly. Physical activity benefits brain health.'
+            'text': 'Aim for 150 minutes of moderate exercise weekly for brain health.'
         },
         {
             'icon': '😴',
             'title': 'Quality Sleep',
-            'text': 'Prioritize 7-8 hours of quality sleep. Good sleep helps clear brain waste products.'
-        },
-        {
-            'icon': '🧘',
-            'title': 'Stress Management',
-            'text': 'Practice stress-reduction techniques like meditation, yoga, or deep breathing exercises.'
+            'text': 'Prioritize 7-8 hours of quality sleep to clear brain waste products.'
         }
     ])
     
-    return recommendations[:6]  # Return top 6 recommendations
+    return recommendations[:6]
 
 # ============================================================================
 # RUN SERVER
 # ============================================================================
 
 if __name__ == '__main__':
+    print("✓ Server starting on http://localhost:5000")
+    print(f"{'='*80}\n")
     app.run(debug=True, host='0.0.0.0', port=5000)
