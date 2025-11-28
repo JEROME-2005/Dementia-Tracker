@@ -7,9 +7,7 @@ warnings.filterwarnings('ignore')
 
 app = Flask(__name__)
 
-# ============================================================================
 # LOAD MODEL AND REQUIRED FEATURES
-# ============================================================================
 
 try:
     with open('models/best_model.pkl', 'rb') as f:
@@ -32,9 +30,7 @@ print(f"\n{'='*80}")
 print("DEMENTIA RISK ESTIMATOR - WEB APPLICATION")
 print(f"{'='*80}\n")
 
-# ============================================================================
 # ROUTES
-# ============================================================================
 
 @app.route('/')
 def index():
@@ -115,9 +111,7 @@ def predict():
 def results():
     return render_template('results.html')
 
-# ============================================================================
 # FEATURE ENGINEERING - MATCHES EXACT MODEL TRAINING
-# ============================================================================
 
 def create_model_features(form_data):
     """
@@ -244,9 +238,7 @@ def create_model_features(form_data):
     
     return df
 
-# ============================================================================
 # RECOMMENDATIONS
-# ============================================================================
 
 def generate_recommendations(form_data):
     """Generate personalized recommendations"""
@@ -307,10 +299,8 @@ def generate_recommendations(form_data):
     ])
     
     return recommendations[:6]
-
-# ============================================================================
 # RUN SERVER
-# ============================================================================
+
 
 if __name__ == '__main__':
     print("✓ Server starting on http://localhost:5000")

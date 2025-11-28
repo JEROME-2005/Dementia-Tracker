@@ -1,6 +1,7 @@
 """
 Script to load the training data and save the scaler
 Run this ONCE before starting your Flask app
+
 """
 
 import pandas as pd
